@@ -5,7 +5,10 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node tests/validator.test.ts",
+    "test": "ts-node tests/validator.test.ts && ts-node tests/type-checker.test.ts && ts-node tests/code-generator.test.ts",
+    "test:validator": "ts-node tests/validator.test.ts",
+    "test:types": "ts-node tests/type-checker.test.ts",
+    "test:codegen": "ts-node tests/code-generator.test.ts",
     "test:watch": "tsc --watch"
   },
   "keywords": [
