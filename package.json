@@ -1,0 +1,24 @@
+{
+  "name": "claudescript",
+  "version": "0.1.0",
+  "description": "Claude-friendly, compilable, AI-executable language",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "ts-node tests/validator.test.ts",
+    "test:watch": "tsc --watch"
+  },
+  "keywords": [
+    "language",
+    "compiler",
+    "ai-friendly",
+    "freelang"
+  ],
+  "author": "Claude AI",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
+  }
+}
