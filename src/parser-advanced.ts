@@ -1,186 +1,96 @@
 /**
- * Phase 9: Advanced Parser (깊이 있는 파서)
- *
- * 지원 기능:
- * - 배열 리터럴 [1, 2, 3]
- * - 객체 리터럴 {x: 1, y: 2}
- * - 배열/객체 접근 arr[0], obj.x
- * - 함수 정의 defn add(a, b) { return a + b; }
- * - for 루프 (C-style, for...in, for...of)
- * - 조건부 연산자 a ? b : c
- * - 복합 할당 +=, -=
- * - 에러 복구 (error recovery)
- * - 중첩된 구조 깊이 제한 없음
+ * Advanced Parser for ClaudeScript
+ * Recursive descent parser with operator precedence
  */
 
 import { Token, TokenType, LexerAdvanced } from "./lexer-advanced";
 
-export interface Expr {
+export interface ASTNode {
   type: string;
   [key: string]: any;
-}
-
-export interface Stmt {
-  type: string;
-  [key: string]: any;
-}
-
-export interface Program {
-  body: Stmt[];
-}
-
-export interface ParseError {
-  message: string;
-  token: Token;
-  line: number;
-  column: number;
 }
 
 export class ParserAdvanced {
   private tokens: Token[];
   private current = 0;
-  private errors: ParseError[] = [];
-  private panicMode = false;
-  private synchronizing = false;
+  private errors: Array<{ message: string; line: number; column: number }> = [];
 
-  constructor(private source: string) {
-    const lexer = new LexerAdvanced(source);
-    this.tokens = lexer.tokenize();
-
-    // 렉싱 에러 검사
-    const lexErrors = lexer.getErrors();
-    if (lexErrors.length > 0) {
-      lexErrors.forEach((err) => {
-        this.errors.push({
-          message: err.message,
-          token: this.peek(),
-          line: err.line,
-          column: err.column,
-        });
-      });
-    }
+  constructor(tokens: Token[]) {
+    this.tokens = tokens;
   }
 
-  parse(): Program {
-    const body: Stmt[] = [];
+  parse(): ASTNode {
+    const body: ASTNode[] = [];
 
     while (!this.isAtEnd()) {
-      try {
-        const stmt = this.statement();
-        if (stmt) body.push(stmt);
-      } catch (error) {
-        this.panicMode = true;
-        this.synchronize();
+      const stmt = this.statement();
+      if (stmt) {
+        body.push(stmt);
       }
     }
 
-    return { body };
+    return {
+      type: "Program",
+      body,
+    };
   }
 
-  private statement(): Stmt | null {
+  private statement(): ASTNode | null {
     try {
-      // let/const 선언
       if (this.match(TokenType.LET, TokenType.CONST)) {
-        return this.varDeclStatement();
+        return this.varDeclaration();
       }
-
-      // 함수 정의
       if (this.match(TokenType.DEFN)) {
-        return this.functionDeclStatement();
+        return this.functionDeclaration();
       }
-
-      // while 루프
-      if (this.match(TokenType.WHILE)) {
-        return this.whileStatement();
-      }
-
-      // for 루프
-      if (this.match(TokenType.FOR)) {
-        return this.forStatement();
-      }
-
-      // if 문
       if (this.match(TokenType.IF)) {
         return this.ifStatement();
       }
-
-      // return 문
+      if (this.match(TokenType.WHILE)) {
+        return this.whileStatement();
+      }
+      if (this.match(TokenType.FOR)) {
+        return this.forStatement();
+      }
       if (this.match(TokenType.RETURN)) {
         return this.returnStatement();
       }
-
-      // break/continue
       if (this.match(TokenType.BREAK)) {
-        this.consume(TokenType.SEMICOLON, "Expected ';' after break");
+        this.consumeStatementEnd();
         return { type: "Break" };
       }
-
       if (this.match(TokenType.CONTINUE)) {
-        this.consume(TokenType.SEMICOLON, "Expected ';' after continue");
+        this.consumeStatementEnd();
         return { type: "Continue" };
       }
-
-      // 블록 ({}로 감싼 문)
-      if (this.check(TokenType.LBRACE)) {
+      if (this.match(TokenType.LBRACE)) {
         return this.blockStatement();
       }
 
-      // 표현식 문
-      const expr = this.expression();
-
-      // 할당 또는 복합 할당
-      if (this.match(TokenType.EQ)) {
-        const value = this.expression();
-        this.consume(TokenType.SEMICOLON, "Expected ';' after assignment");
-        return {
-          type: "Assignment",
-          target: expr,
-          value,
-        };
-      }
-
-      if (this.match(TokenType.PLUS_EQ, TokenType.MINUS_EQ)) {
-        const op = this.previous().lexeme;
-        const value = this.expression();
-        this.consume(TokenType.SEMICOLON, "Expected ';' after compound assignment");
-        return {
-          type: "CompoundAssignment",
-          target: expr,
-          op: op.substring(0, op.length - 1), // += → +, -= → -
-          value,
-        };
-      }
-
-      this.consume(TokenType.SEMICOLON, "Expected ';' after expression");
-
-      // 함수 호출 문
-      if (expr.type === "Call") {
-        return expr as any;
-      }
-
-      throw this.error("Expected statement", this.previous());
-    } catch (error) {
-      if (!this.panicMode) {
-        throw error;
-      }
+      return this.expressionStatement();
+    } catch (e) {
+      this.synchronize();
       return null;
     }
   }
 
-  private varDeclStatement(): Stmt {
+  private varDeclaration(): ASTNode {
     const name = this.consume(TokenType.IDENTIFIER, "Expected variable name").lexeme;
-    let init: Expr | undefined;
+    let init = null;
 
-    if (this.match(TokenType.EQ)) {
+    if (this.match(TokenType.ASSIGN)) {
       init = this.expression();
     }
 
-    this.consume(TokenType.SEMICOLON, "Expected ';' after variable declaration");
-
-    return { type: "VarDecl", name, init };
+    this.consumeStatementEnd();
+    return {
+      type: "VarDecl",
+      name,
+      init,
+    };
   }
 
-  private functionDeclStatement(): Stmt {
+  private functionDeclaration(): ASTNode {
     const name = this.consume(TokenType.IDENTIFIER, "Expected function name").lexeme;
     this.consume(TokenType.LPAREN, "Expected '(' after function name");
 
@@ -194,7 +104,7 @@ export class ParserAdvanced {
     this.consume(TokenType.RPAREN, "Expected ')' after parameters");
     this.consume(TokenType.LBRACE, "Expected '{' before function body");
 
-    const body: Stmt[] = [];
+    const body: ASTNode[] = [];
     while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
       const stmt = this.statement();
       if (stmt) body.push(stmt);
@@ -202,298 +112,372 @@ export class ParserAdvanced {
 
     this.consume(TokenType.RBRACE, "Expected '}' after function body");
 
-    return { type: "FunctionDecl", name, params, body };
+    return {
+      type: "FunctionDecl",
+      name,
+      params,
+      body,
+    };
   }
 
-  private blockStatement(): Stmt {
-    this.consume(TokenType.LBRACE, "Expected '{'");
-    const body: Stmt[] = [];
+  private ifStatement(): ASTNode {
+    this.consume(TokenType.LPAREN, "Expected '(' after 'if'");
+    const condition = this.expression();
+    this.consume(TokenType.RPAREN, "Expected ')' after condition");
 
-    while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
-      const stmt = this.statement();
-      if (stmt) body.push(stmt);
+    const thenBranch = this.statement();
+    let elseBranch = null;
+
+    if (this.match(TokenType.ELSE)) {
+      elseBranch = this.statement();
     }
 
-    this.consume(TokenType.RBRACE, "Expected '}' after block");
-    return { type: "Block", body };
+    return {
+      type: "If",
+      condition,
+      then: thenBranch,
+      else: elseBranch,
+    };
   }
 
-  private whileStatement(): Stmt {
+  private whileStatement(): ASTNode {
     this.consume(TokenType.LPAREN, "Expected '(' after 'while'");
-    const cond = this.expression();
-    this.consume(TokenType.RPAREN, "Expected ')' after while condition");
-    this.consume(TokenType.LBRACE, "Expected '{' before while body");
+    const condition = this.expression();
+    this.consume(TokenType.RPAREN, "Expected ')' after condition");
+    const body = this.statement();
 
-    const body: Stmt[] = [];
-    while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
-      const stmt = this.statement();
-      if (stmt) body.push(stmt);
-    }
-
-    this.consume(TokenType.RBRACE, "Expected '}' after while body");
-    return { type: "While", cond, body };
+    return {
+      type: "While",
+      condition,
+      body,
+    };
   }
 
-  private forStatement(): Stmt {
+  private forStatement(): ASTNode {
     this.consume(TokenType.LPAREN, "Expected '(' after 'for'");
 
-    let init: Expr | Stmt | undefined;
-    let cond: Expr | undefined;
-    let update: Expr | undefined;
-    let variable: string | undefined;
-    let iterableExpr: Expr | undefined;
-    let isForIn = false;
-    let isForOf = false;
+    let variable: string | null = null;
+    let init: ASTNode | null = null;
+    let condition: ASTNode | null = null;
+    let update: ASTNode | null = null;
+    let iterable: ASTNode | null = null;
+    let iterableType: "in" | "of" | null = null;
 
-    // for...in 또는 for...of 확인
-    const checkPoint = this.current;
-    if (this.match(TokenType.LET)) {
-      variable = this.consume(TokenType.IDENTIFIER, "Expected variable name").lexeme;
-
-      if (this.match(TokenType.IN)) {
-        isForIn = true;
-        iterableExpr = this.expression();
-      } else if (this.match(TokenType.OF)) {
-        isForOf = true;
-        iterableExpr = this.expression();
-      } else {
-        // 일반 for 루프로 복원
-        this.current = checkPoint;
-        init = this.varDeclStatement();
-        if (!this.match(TokenType.SEMICOLON)) {
-          cond = this.expression();
-          this.consume(TokenType.SEMICOLON, "Expected ';' after for condition");
-          if (!this.check(TokenType.RPAREN)) {
-            update = this.expression();
-          }
+    // Check for for...in or for...of
+    if (this.check(TokenType.LET) || this.check(TokenType.CONST)) {
+      const checkpoint = this.current;
+      this.advance(); // skip let/const
+      if (this.check(TokenType.IDENTIFIER)) {
+        const name = this.advance().lexeme;
+        if (this.check(TokenType.IN)) {
+          variable = name;
+          this.advance(); // skip 'in'
+          iterable = this.expression();
+          iterableType = "in";
+          this.consume(TokenType.RPAREN, "Expected ')' after for...in");
+          const body = this.statement();
+          return {
+            type: "ForIn",
+            variable,
+            iterable,
+            body,
+          };
+        } else if (this.check(TokenType.OF)) {
+          variable = name;
+          this.advance(); // skip 'of'
+          iterable = this.expression();
+          iterableType = "of";
+          this.consume(TokenType.RPAREN, "Expected ')' after for...of");
+          const body = this.statement();
+          return {
+            type: "ForOf",
+            variable,
+            iterable,
+            body,
+          };
+        } else {
+          // Regular for loop
+          this.current = checkpoint;
         }
+      } else {
+        this.current = checkpoint;
       }
-    } else if (!this.check(TokenType.SEMICOLON)) {
+    }
+
+    // Regular C-style for loop
+    if (!this.check(TokenType.SEMICOLON)) {
       init = this.expression();
-      this.consume(TokenType.SEMICOLON, "Expected ';' after for init");
-      if (!this.check(TokenType.SEMICOLON)) {
-        cond = this.expression();
-        this.consume(TokenType.SEMICOLON, "Expected ';' after for condition");
-        if (!this.check(TokenType.RPAREN)) {
-          update = this.expression();
-        }
-      }
-    } else {
-      this.advance(); // Skip ';'
-      if (!this.check(TokenType.SEMICOLON)) {
-        cond = this.expression();
-        this.consume(TokenType.SEMICOLON, "Expected ';' after for condition");
-        if (!this.check(TokenType.RPAREN)) {
-          update = this.expression();
-        }
-      }
     }
-
-    this.consume(TokenType.RPAREN, "Expected ')' after for clauses");
-    this.consume(TokenType.LBRACE, "Expected '{' before for body");
-
-    const body: Stmt[] = [];
-    while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
-      const stmt = this.statement();
-      if (stmt) body.push(stmt);
-    }
-
-    this.consume(TokenType.RBRACE, "Expected '}' after for body");
-
-    // for...in 또는 for...of
-    if (isForIn) {
-      return { type: "ForIn", variable, iterable: iterableExpr, body };
-    }
-    if (isForOf) {
-      return { type: "ForOf", variable, iterable: iterableExpr, body };
-    }
-
-    // 일반 for 루프
-    return { type: "For", init, cond, update, body };
-  }
-
-  private ifStatement(): Stmt {
-    this.consume(TokenType.LPAREN, "Expected '(' after 'if'");
-    const cond = this.expression();
-    this.consume(TokenType.RPAREN, "Expected ')' after if condition");
-    this.consume(TokenType.LBRACE, "Expected '{' before if body");
-
-    const thenBody: Stmt[] = [];
-    while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
-      const stmt = this.statement();
-      if (stmt) thenBody.push(stmt);
-    }
-
-    this.consume(TokenType.RBRACE, "Expected '}' after if body");
-
-    let elseBody: Stmt[] | undefined;
-    if (this.match(TokenType.ELSE)) {
-      if (this.check(TokenType.IF)) {
-        // else if를 else { if } 형태로 변환
-        const elseIfStmt = this.statement();
-        elseBody = elseIfStmt ? [elseIfStmt] : undefined;
-      } else {
-        this.consume(TokenType.LBRACE, "Expected '{' before else body");
-        elseBody = [];
-        while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
-          const stmt = this.statement();
-          if (stmt) elseBody.push(stmt);
-        }
-        this.consume(TokenType.RBRACE, "Expected '}' after else body");
-      }
-    }
-
-    return { type: "If", cond, then: thenBody, else: elseBody };
-  }
-
-  private returnStatement(): Stmt {
-    let value: Expr | undefined;
+    this.consume(TokenType.SEMICOLON, "Expected ';' after for init");
 
     if (!this.check(TokenType.SEMICOLON)) {
-      value = this.expression();
+      condition = this.expression();
     }
+    this.consume(TokenType.SEMICOLON, "Expected ';' after for condition");
 
-    this.consume(TokenType.SEMICOLON, "Expected ';' after return");
-    return { type: "Return", value };
+    if (!this.check(TokenType.RPAREN)) {
+      update = this.expression();
+    }
+    this.consume(TokenType.RPAREN, "Expected ')' after for clauses");
+
+    const body = this.statement();
+
+    return {
+      type: "For",
+      init,
+      condition,
+      update,
+      body,
+    };
   }
 
-  private expression(): Expr {
+  private returnStatement(): ASTNode {
+    let value = null;
+    if (!this.check(TokenType.SEMICOLON) && !this.isAtEnd()) {
+      value = this.expression();
+    }
+    this.consumeStatementEnd();
+    return {
+      type: "Return",
+      value,
+    };
+  }
+
+  private blockStatement(): ASTNode {
+    const statements: ASTNode[] = [];
+    while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
+      const stmt = this.statement();
+      if (stmt) statements.push(stmt);
+    }
+    this.consume(TokenType.RBRACE, "Expected '}' after block");
+    return {
+      type: "Block",
+      statements,
+    };
+  }
+
+  private expressionStatement(): ASTNode {
+    const expr = this.expression();
+    this.consumeStatementEnd();
+    return expr;
+  }
+
+  private expression(): ASTNode {
     return this.assignment();
   }
 
-  private assignment(): Expr {
-    return this.ternary();
+  private assignment(): ASTNode {
+    let expr = this.ternary();
+
+    if (this.match(TokenType.ASSIGN)) {
+      const value = this.assignment();
+      if (expr.type === "Identifier") {
+        return {
+          type: "Assignment",
+          name: expr.name,
+          value,
+        };
+      }
+    } else if (this.match(TokenType.PLUS_ASSIGN, TokenType.MINUS_ASSIGN)) {
+      const op = this.previous().lexeme === "+=" ? "+" : "-";
+      const value = this.assignment();
+      if (expr.type === "Identifier") {
+        return {
+          type: "CompoundAssignment",
+          name: expr.name,
+          op,
+          value,
+        };
+      }
+    }
+
+    return expr;
   }
 
-  private ternary(): Expr {
+  private ternary(): ASTNode {
     let expr = this.logicalOr();
 
     if (this.match(TokenType.QUESTION)) {
       const thenExpr = this.expression();
-      this.consume(TokenType.COLON, "Expected ':' in ternary operator");
-      const elseExpr = this.expression();
-      return { type: "Ternary", cond: expr, then: thenExpr, else: elseExpr };
+      this.consume(TokenType.COLON, "Expected ':' in ternary");
+      const elseExpr = this.ternary();
+      return {
+        type: "Ternary",
+        condition: expr,
+        then: thenExpr,
+        else: elseExpr,
+      };
     }
 
     return expr;
   }
 
-  private logicalOr(): Expr {
+  private logicalOr(): ASTNode {
     let expr = this.logicalAnd();
 
     while (this.match(TokenType.OR)) {
-      const op = "||";
+      const operator = this.previous().lexeme;
       const right = this.logicalAnd();
-      expr = { type: "Binary", op, left: expr, right };
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private logicalAnd(): Expr {
+  private logicalAnd(): ASTNode {
     let expr = this.equality();
 
     while (this.match(TokenType.AND)) {
-      const op = "&&";
+      const operator = this.previous().lexeme;
       const right = this.equality();
-      expr = { type: "Binary", op, left: expr, right };
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private equality(): Expr {
+  private equality(): ASTNode {
     let expr = this.comparison();
 
-    while (this.match(TokenType.EQ_EQ, TokenType.NOT_EQ)) {
-      const op = this.previous().lexeme;
+    while (this.match(TokenType.EQ, TokenType.NE)) {
+      const operator = this.previous().lexeme;
       const right = this.comparison();
-      expr = { type: "Binary", op, left: expr, right };
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private comparison(): Expr {
+  private comparison(): ASTNode {
     let expr = this.addition();
 
-    while (this.match(TokenType.LT, TokenType.GT, TokenType.LT_EQ, TokenType.GT_EQ)) {
-      const op = this.previous().lexeme;
+    while (this.match(TokenType.LT, TokenType.GT, TokenType.LE, TokenType.GE)) {
+      const operator = this.previous().lexeme;
       const right = this.addition();
-      expr = { type: "Binary", op, left: expr, right };
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private addition(): Expr {
+  private addition(): ASTNode {
     let expr = this.multiplication();
 
     while (this.match(TokenType.PLUS, TokenType.MINUS)) {
-      const op = this.previous().lexeme;
+      const operator = this.previous().lexeme;
       const right = this.multiplication();
-      expr = { type: "Binary", op, left: expr, right };
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private multiplication(): Expr {
+  private multiplication(): ASTNode {
     let expr = this.power();
 
     while (this.match(TokenType.STAR, TokenType.SLASH, TokenType.PERCENT)) {
-      const op = this.previous().lexeme;
+      const operator = this.previous().lexeme;
       const right = this.power();
-      expr = { type: "Binary", op, left: expr, right };
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private power(): Expr {
+  private power(): ASTNode {
     let expr = this.unary();
 
-    if (this.match(TokenType.POWER)) {
-      const right = this.power(); // Right associative
-      expr = { type: "Binary", op: "**", left: expr, right };
+    while (this.match(TokenType.POWER)) {
+      const operator = this.previous().lexeme;
+      const right = this.unary();
+      expr = {
+        type: "Binary",
+        operator,
+        left: expr,
+        right,
+      };
     }
 
     return expr;
   }
 
-  private unary(): Expr {
+  private unary(): ASTNode {
     if (this.match(TokenType.NOT, TokenType.MINUS, TokenType.PLUS)) {
-      const op = this.previous().lexeme;
+      const operator = this.previous().lexeme;
       const right = this.unary();
-      return { type: "Unary", op, arg: right };
+      return {
+        type: "Unary",
+        operator,
+        operand: right,
+      };
     }
 
     return this.postfix();
   }
 
-  private postfix(): Expr {
+  private postfix(): ASTNode {
     let expr = this.primary();
 
     while (true) {
-      if (this.match(TokenType.LBRACKET)) {
-        // 배열/객체 인덱싱: arr[i], obj[key]
+      if (this.match(TokenType.DOT)) {
+        const property = this.consume(TokenType.IDENTIFIER, "Expected property name").lexeme;
+        expr = {
+          type: "Member",
+          object: expr,
+          property,
+          computed: false,
+        };
+      } else if (this.match(TokenType.LBRACKET)) {
         const index = this.expression();
-        this.consume(TokenType.RBRACKET, "Expected ']' after array index");
-        expr = { type: "Index", object: expr, index };
-      } else if (this.match(TokenType.DOT)) {
-        // 멤버 접근: obj.prop
-        const prop = this.consume(TokenType.IDENTIFIER, "Expected property name after '.'").lexeme;
-        expr = { type: "Member", object: expr, property: prop };
-      } else if (expr.type === "Identifier" && this.match(TokenType.LPAREN)) {
-        // 함수 호출: func(args)
-        const args: Expr[] = [];
+        this.consume(TokenType.RBRACKET, "Expected ']' after index");
+        expr = {
+          type: "Index",
+          object: expr,
+          index,
+        };
+      } else if (this.match(TokenType.LPAREN)) {
+        const args: ASTNode[] = [];
         if (!this.check(TokenType.RPAREN)) {
           do {
             args.push(this.expression());
           } while (this.match(TokenType.COMMA));
         }
         this.consume(TokenType.RPAREN, "Expected ')' after arguments");
-        expr = { type: "Call", name: (expr as any).name, args };
+        expr = {
+          type: "Call",
+          callee: expr,
+          arguments: args,
+        };
       } else {
         break;
       }
@@ -502,90 +486,76 @@ export class ParserAdvanced {
     return expr;
   }
 
-  private primary(): Expr {
-    // 숫자 리터럴
+  private primary(): ASTNode {
+    if (this.match(TokenType.BOOLEAN)) {
+      return {
+        type: "BooleanLiteral",
+        value: this.previous().value,
+      };
+    }
+
     if (this.match(TokenType.NUMBER)) {
-      return { type: "NumberLiteral", value: (this.previous() as any).value };
+      return {
+        type: "NumberLiteral",
+        value: this.previous().value,
+      };
     }
 
-    // 문자열 리터럴
     if (this.match(TokenType.STRING)) {
-      return { type: "StringLiteral", value: (this.previous() as any).value };
+      return {
+        type: "StringLiteral",
+        value: this.previous().value,
+      };
     }
 
-    // true/false
-    if (this.match(TokenType.TRUE)) {
-      return { type: "BooleanLiteral", value: true };
-    }
-    if (this.match(TokenType.FALSE)) {
-      return { type: "BooleanLiteral", value: false };
+    if (this.match(TokenType.IDENTIFIER)) {
+      return {
+        type: "Identifier",
+        name: this.previous().lexeme,
+      };
     }
 
-    // 배열 리터럴: [1, 2, 3]
     if (this.match(TokenType.LBRACKET)) {
-      const elements: Expr[] = [];
+      const elements: ASTNode[] = [];
       if (!this.check(TokenType.RBRACKET)) {
         do {
           elements.push(this.expression());
         } while (this.match(TokenType.COMMA));
       }
       this.consume(TokenType.RBRACKET, "Expected ']' after array elements");
-      return { type: "ArrayLiteral", elements };
+      return {
+        type: "ArrayLiteral",
+        elements,
+      };
     }
 
-    // 객체 리터럴: {x: 1, y: 2}
     if (this.match(TokenType.LBRACE)) {
-      const properties: Array<{ key: string; value: Expr }> = [];
+      const properties: Array<[string, ASTNode]> = [];
       if (!this.check(TokenType.RBRACE)) {
         do {
-          const key = this.consume(TokenType.IDENTIFIER, "Expected property name").lexeme;
-          this.consume(TokenType.COLON, "Expected ':' after property name");
+          const key = this.consume(TokenType.IDENTIFIER, "Expected property key").lexeme;
+          this.consume(TokenType.COLON, "Expected ':' after property key");
           const value = this.expression();
-          properties.push({ key, value });
+          properties.push([key, value]);
         } while (this.match(TokenType.COMMA));
       }
       this.consume(TokenType.RBRACE, "Expected '}' after object properties");
-      return { type: "ObjectLiteral", properties };
+      return {
+        type: "ObjectLiteral",
+        properties,
+      };
     }
 
-    // 식별자
-    if (this.match(TokenType.IDENTIFIER)) {
-      return { type: "Identifier", name: this.previous().lexeme };
-    }
-
-    // 그룹화된 표현식: (expr)
     if (this.match(TokenType.LPAREN)) {
       const expr = this.expression();
       this.consume(TokenType.RPAREN, "Expected ')' after expression");
       return expr;
     }
 
-    // 화살표 함수: (a, b) => a + b
-    if (this.check(TokenType.LPAREN)) {
-      const checkPoint = this.current;
-      try {
-        this.advance(); // Skip '('
-        const params: string[] = [];
-        if (!this.check(TokenType.RPAREN)) {
-          do {
-            params.push(this.consume(TokenType.IDENTIFIER, "Expected parameter name").lexeme);
-          } while (this.match(TokenType.COMMA));
-        }
-        this.consume(TokenType.RPAREN, "Expected ')' after parameters");
-
-        if (this.match(TokenType.ARROW)) {
-          const body = this.expression();
-          return { type: "ArrowFunction", params, body };
-        }
-      } catch {
-        // 실패하면 원래 위치로 복원
-        this.current = checkPoint;
-      }
-    }
-
-    throw this.error("Expected expression", this.peek());
+    throw this.error("Expected expression");
   }
 
+  // Helper methods
   private match(...types: TokenType[]): boolean {
     for (const type of types) {
       if (this.check(type)) {
@@ -620,20 +590,20 @@ export class ParserAdvanced {
 
   private consume(type: TokenType, message: string): Token {
     if (this.check(type)) return this.advance();
-    throw this.error(message, this.peek());
+    throw this.error(message);
   }
 
-  private error(message: string, token: Token): Error {
+  private error(message: string): Error {
+    const token = this.peek();
     this.errors.push({
       message,
-      token,
       line: token.line,
       column: token.column,
     });
-    return new Error(`${message} at line ${token.line}`);
+    return new Error(message);
   }
 
-  private synchronize() {
+  private synchronize(): void {
     this.advance();
 
     while (!this.isAtEnd()) {
@@ -642,6 +612,7 @@ export class ParserAdvanced {
       switch (this.peek().type) {
         case TokenType.DEFN:
         case TokenType.LET:
+        case TokenType.CONST:
         case TokenType.FOR:
         case TokenType.IF:
         case TokenType.WHILE:
@@ -653,7 +624,20 @@ export class ParserAdvanced {
     }
   }
 
-  getErrors(): ParseError[] {
+  private consumeStatementEnd(): void {
+    if (this.match(TokenType.SEMICOLON)) return;
+    if (this.isAtEnd() || this.check(TokenType.RBRACE)) return;
+    // Optional semicolon
+  }
+
+  getErrors(): Array<{ message: string; line: number; column: number }> {
     return this.errors;
   }
+}
+
+export function parse(source: string): ASTNode {
+  const lexer = new LexerAdvanced(source);
+  const tokens = lexer.scanTokens();
+  const parser = new ParserAdvanced(tokens);
+  return parser.parse();
 }

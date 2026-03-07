@@ -513,22 +513,19 @@ export class TypeChecker {
    * 타입 추론
    */
   private inferType(expr: any): TypeSpec | null {
-    if (expr.type === "literal") {
-      return { base: expr.value_type };
-    }
-    if (expr.type === "literal_array") {
-      return {
-        base: "Array",
-        element_type: expr.element_type,
-      };
-    }
-    return null;
+    // getExpressionType으로 위임 (더 넓은 타입 처리)
+    return this.getExpressionType(expr);
   }
 
   /**
    * 타입 호환성 검사
    */
   private isCompatible(expected: TypeSpec, actual: TypeSpec): boolean {
+    // none 리터럴은 모든 Option<T>과 호환
+    if (actual.base === "none" && expected.base === "Option") {
+      return true;
+    }
+
     // 같은 기본 타입
     if (expected.base === actual.base) {
       // 복합 타입의 경우 재귀적으로 검사
